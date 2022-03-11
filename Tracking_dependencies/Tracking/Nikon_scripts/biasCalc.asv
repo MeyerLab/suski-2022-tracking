@@ -1,0 +1,238 @@
+function biasCalc(s,debug)
+%Calculate bias based on Nikon saved tiff files, all in same folder
+%%% file paths %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+rawdir=s.imagepath;
+shadingpath=s.shadingpath;
+Biasdir=s.biaspath;
+%%% setup %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+names=s.names;
+row_mat = s.row_mat;
+col_mat = s.col_mat;
+site_mat = s.site_mat;
+frame_mat= s.frame_mat;
+formatCode = s.formatCode;
+microscope = s.microscope;
+
+%%% Segmentation settings
+nucradius=s.nucradius;%12;
+blur_radius = s.blur_radius;
+maskforeground = s.maskforeground; %1 to mask nuclei
+dilate = s.dilate; %nucradius/2
+adaptive = s.adaptive;
+
+%%% Bias Calc settings
+method = s.method; % Block or pixel based
+foreground_calc = s.foreground_calc; % 1 for foreground calc
+%Block settings
+blocknum= s.blocknum;
+prctilethresh = s.prctilethresh;
+%Pixel
+prctile_thresh=s.prctile_thresh;
+sigma = s.sigma;
+compress = s.compress; 
+
+
+
+%%% Initialize variables %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+if ~isempty(shadingpath)
+    load(shadingpath,'cmosoffset');
+    bgcmos = cmosoffset;
+    [height,width] = size(bgcmos);
+else
+    site = site_mat(1);
+    col = col_mat(1);
+    row = row_mat(1);
+    shot = [num2str(row),'_',num2str(col),'_',num2str(site)];
+    shotSearch = sprintf(formatCode,0,rowColumnTowellName(row,col),site-1);
+    fileName = findFile(rawdir,shotSearch);
+    tempim = double(imread(fullfile(rawdir,fileName),1));
+    [height, width] = size(tempim);
+    bgcmos = 100 * ones(height,width);
+end
+
+numsites = numel(site_mat);
+if ~exist(Biasdir,'dir')
+    mkdir(Biasdir);
+end
+if ~exist([Biasdir,'_all'],'dir')
+    mkdir([Biasdir,'_all']);
+end
+bias_save = {};
+block_save = {};
+if strcmp(method,'block')
+    for i = 1:length(names)
+        block_save{i} = [];
+    end
+end
+
+
+%% Calculate bias
+for s = 1: numsites
+    %%% Initialize intermediate variables 
+    switch method
+        case 'pixel'
+            accumulate_back = {};
+            back_count = {};
+            for i = 1:length(names)               
+                accumulate_back{i} = zeros(height,width);
+                back_count{i} = zeros(height,width);                
+            end
+        case 'block'
+            biasstack = {};
+            for i = 1:length(names)              
+                biasstack{i} = [];
+            end
+    end
+    
+    site = site_mat(s);
+    for c = 1: numel(col_mat)
+        col = col_mat(c);
+        for r = 1:numel(row_mat)
+            row = row_mat(r);
+            for f = 1:numel(frame_mat)
+                frame = frame_mat(f);
+                shot = [num2str(row),'_',num2str(col),'_',num2str(site)];
+                fprintf([shot,'\n']);
+
+                %%% Loop through channels
+                for i = 1:length(names)
+                    try
+                        switch microscope
+                            %Nikon naming
+                            case 'nikon'
+                                shotSearch = formatCode;
+                                %shotSearch = sprintf(formatCode,frame-1,rowColumnTowellName(row,col),site-1);
+                                fileName = findFile(rawdir,shotSearch);
+                                raw{i} = double(imread(fullfile(rawdir,fileName),i));
+                            case 'IXM'
+                                raw{i} = double(imread(fullfile(rawdir,shot,[shot '_' names{i},'_',num2str(frame),'.tif'])));
+                        
+                    catch
+                        warning([shot ' not found']);
+                        continue;
+                    end
+                    raw{i} = raw{i} - bgcmos;
+                    
+                    %%% Mask Image
+                    switch maskforeground
+                        case 0
+                            mask = false(size(raw{i}));
+                        case 1
+                            rawcomp = imresize(raw{i}, compress);
+                            if adaptive(i)
+                                normraw{i} = raw{i}/median(rawcomp(:));
+                                overlay{i} = normraw{i}+normraw{1};
+                                overlay{i}(overlay{i}<1) = 1;
+                            else
+                                overlay{i} = raw{1};
+                            end
+                            mask = threshmask(overlay{i},blur_radius);
+                            if ~foreground_calc
+                                mask = imdilate(mask, strel('disk', ceil(nucradius*dilate{i})));
+                            else
+                                mask = ~mask;
+                                mask = imdilate(mask, strel('disk',ceil(nucradius*dilate{i})));
+                            end
+                    end
+                    blur = imfilter(raw{i},fspecial('disk',blur_radius),'symmetric');
+                    blurnan = blur;
+                    blurnan(mask) = NaN;
+                    if debug
+                        extractmask=bwmorph(mask,'remove');
+                        [height,width]=size(mask);
+                        RGB=zeros(height,width,3);
+                        RGB(:,:,1)=imadjust(mat2gray(raw{i}));
+                        RGB(:,:,2)=extractmask;
+                        figure,imshow(RGB);
+                        keyboard;
+                    end
+                    %{
+%%% debugging: view images %%%%%%%%%%
+%%
+ extractmask=bwmorph(mask,'remove');
+[height,width]=size(mask);
+RGB=zeros(height,width,3);
+RGB(:,:,1)=imadjust(mat2gray(raw{i}));
+RGB(:,:,2)=extractmask;
+figure,imshow(RGB);
+%%
+                    %}
+                    %%% Compile background
+                    switch method
+                        case 'pixel'
+                            blurnancomp = imresize(blurnan, compress);
+                            outliers = blurnan < prctile(blurnancomp(:),prctile_thresh(1)) | blurnan >prctile(blurnancomp(:),prctile_thresh(2));
+                            mask = mask | outliers;
+                            blurnan(mask) = NaN;
+                            blurnancomp = imresize(blurnan,compress);
+                            blur(mask)=0;
+                            %                     imagesc(blur);
+                            %                     title(names{i});
+                            %                     pause;
+                            blur = blur/nanmedian(blurnancomp(:));
+                            accumulate_back{i} = accumulate_back{i} + blur;
+                            back_count{i} = back_count{i} + ~mask;
+                        case 'block'
+                            bgblock=blockpercentile_blockimage(blurnan,blocknum,prctilethresh);
+                            midrc=ceil(blocknum/2);
+                            refval=bgblock(midrc,midrc);
+                            if ~isnan(refval)
+                                bgblocknorm=bgblock/refval;
+                                biasstack{i}=cat(3,biasstack{i},bgblocknorm);
+                            end
+                    end
+                    
+                end
+            end
+        end
+    end
+    
+    for i = 1:length(names)
+        switch method
+            case 'pixel'
+                rawback = accumulate_back{i}./back_count{i};
+                rawback(isnan(rawback)) = 1;
+                blurback = imgaussfilt(rawback,sigma);
+                %blurback = imfilter(rawback,fspecial('disk',blursize),'symmetric');
+                bias = blurback/median(blurback(:));
+                
+            case 'block'
+                blockbias=nanmedian(biasstack{i},3);
+                bias=imresize(blockbias,[height width],'bicubic');
+                block_save{i} = cat(3,block_save{i}, biasstack{i});
+        end
+        save([Biasdir,'\',names{i},'_',num2str(site),'.mat'],'bias');
+        bias_save{i,s} = bias;
+    end
+end
+
+
+for i = 1:length(names)
+    switch method
+        case 'pixel'
+            bias = zeros(height,width);
+            for j = 1:size(bias_save,2)
+                bias = bias + bias_save{i,j};
+            end
+            bias = bias/size(bias_save,2);
+        case 'block'
+            blockbias = nanmedian(block_save{i},3);
+            bias=imresize(blockbias,[height width],'bicubic');
+            bias_all{i} = bias;
+    end
+    for s = 1:numsites
+        save([Biasdir,'_all\',names{i},'_',num2str(site_mat(s)),'.mat'],'bias');
+    end
+end
+
+%%% Output bias
+figure('pos',[10 10  numsites*100 length(names)*100])
+for i = 1:length(names)
+    for s = 1:numsites
+        subplot(length(names),numsites,sub2ind([ numsites length(names)], s,i))
+        outputsmall = imresize(bias_save{i,s},.25);
+        imagesc(outputsmall);
+        title([names{i} ' Site: ' num2str(site_mat(s))]);
+    end
+end
+end

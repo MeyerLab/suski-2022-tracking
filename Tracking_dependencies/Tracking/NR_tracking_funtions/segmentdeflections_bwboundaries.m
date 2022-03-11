@@ -1,0 +1,52 @@
+function mask=segmentdeflections_bwboundaries(mask,nucr,debrisarea)
+[B,L]=bwboundaries(mask,'noholes');
+%[B,L]=bwboundaries(mask);
+obnum=max(L(:));
+bordermask=zeros(size(mask));
+
+
+% figure(1),hold on
+% tic;
+for ci=1:obnum
+    orderedset=B{ci};
+    % If using bwboundaries, reverse the order.
+    orderedset=[orderedset(end:-1:1,2) orderedset(end:-1:1,1)];
+    %[bordermask,~,vIdx,bridgeEnds]=splitdeflections_4_bwboundaries_test_global(orderedset,bordermask,nucr);    
+    %[bordermask,~,vIdx,bridgeEnds]=splitdeflections_4_bwboundaries_test(orderedset,bordermask,nucr);
+    bordermask=splitdeflections_4_bwboundaries(orderedset,bordermask,nucr);
+%     plot(orderedset(:,1),orderedset(:,2))
+%     scatter(orderedset(vIdx,1),orderedset(vIdx,2))
+%     for i = 1:length(bridgeEnds)
+%         plot(bridgeEnds{i}(:,1),bridgeEnds{i}(:,2));
+%     end
+    
+end
+% toc;
+% hold off
+% h1 = gca;
+
+% figure(2),hold on
+% tic;
+% for ci=1:obnum
+%     orderedset=B{ci};
+%     % If using bwboundaries, reverse the order.
+%     orderedset=[orderedset(end:-1:1,2) orderedset(end:-1:1,1)];
+%     
+%     [bordermask,~,vIdx,bridgeEnds]=splitdeflections_4_bwboundaries_test(orderedset,bordermask,nucr);    
+%     plot(orderedset(:,1),orderedset(:,2))
+%     
+%     scatter(orderedset(vIdx,1),orderedset(vIdx,2))
+%     for i = 1:length(bridgeEnds)
+%         plot(bridgeEnds{i}(:,1),bridgeEnds{i}(:,2));
+%     end
+% end
+% toc;
+% hold off
+% h2 = gca;
+% linkaxes([h1 h2]);
+
+
+mask=mask & ~bordermask;
+mask=~bwmorph(~mask,'diag');
+mask=bwareaopen(mask,debrisarea);
+end
